@@ -1,0 +1,7 @@
+# Optional local-model path. Install requirements.txt first.
+torch>=2.2
+transformers>=4.51
+datasets>=2.18
+sae-lens>=5,<7
+transformer-lens>=2,<4
+

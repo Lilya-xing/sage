@@ -1,0 +1,8 @@
+# Minimal API/evaluation packages resolved on 2026-07-24.
+# The project venv uses --system-site-packages for the large ML stack.
+openai==2.48.0
+python-dotenv==1.2.2
+requests==2.34.2
+numpy==2.2.6
+scipy==1.15.3
+

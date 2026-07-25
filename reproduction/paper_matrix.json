@@ -1,0 +1,59 @@
+{
+  "paper": {
+    "title": "SAGE: An Agentic Explainer Framework for Interpreting SAE Features in Language Models",
+    "venue": "EACL 2026 Industry Track",
+    "doi": "10.18653/v1/2026.eacl-industry.37",
+    "arxiv": "2511.20820v2"
+  },
+  "agent_model": "gpt-5",
+  "top_k_exemplars": 10,
+  "initial_hypotheses": 4,
+  "features_per_layer": 10,
+  "layers": [3, 7, 11, 23],
+  "targets": [
+    {
+      "target_llm": "Qwen/Qwen3-4B",
+      "neuronpedia_model_id": "qwen3-4b",
+      "source_template": "{layer}-transcoder-hp"
+    },
+    {
+      "target_llm": "google/gemma-2-2b",
+      "neuronpedia_model_id": "gemma-2-2b",
+      "source_template": "{layer}-gemmascope-res-16k"
+    },
+    {
+      "target_llm": "openai/gpt-oss-20b",
+      "neuronpedia_model_id": "gpt-oss-20b",
+      "source_template": "{layer}-resid-post-aa"
+    }
+  ],
+  "known_qualitative_features": [
+    {
+      "target_llm": "google/gemma-2-2b",
+      "layer": 11,
+      "source": "11-gemmascope-res-16k",
+      "feature": 5125,
+      "paper_claim": "code synchronization and locking constructs"
+    },
+    {
+      "target_llm": "Qwen/Qwen3-4B",
+      "layer": 23,
+      "source": "23-transcoder-hp",
+      "feature": 24625,
+      "paper_claim": "English can't contraction suffix detector"
+    },
+    {
+      "target_llm": "openai/gpt-oss-20b",
+      "layer": 3,
+      "source": "3-resid-post-aa",
+      "feature": 121075,
+      "paper_claim": "terrestrial lexeme or morpheme detector"
+    }
+  ],
+  "strict_replication_gaps": [
+    "The complete 120 sampled feature IDs and random seed are not published.",
+    "The paper-era Neuronpedia snapshot and held-out examples are not frozen.",
+    "The official repository has no paper-version tag or released result artifacts."
+  ]
+}
+

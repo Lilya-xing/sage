@@ -1,0 +1,24 @@
+# Python/cache
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime
+.venv/
+.env
+.env.*
+*.log
+*.tmp
+*.backup
+
+# Large/generated artifacts
+runs/
+outputs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
