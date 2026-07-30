@@ -10,9 +10,10 @@ from core.state_machine import SAGEStateMachine, SAGEState, Hypothesis, TestResu
 class PromptGenerator:
     """动态Prompt生成器 - 根据状态生成定制Prompt"""
     
-    def __init__(self, state_machine: SAGEStateMachine, top_k: int = 10):
+    def __init__(self, state_machine: SAGEStateMachine, top_k: int = 10, initial_hypotheses: int = 4):
         self.sm = state_machine
         self.top_k = top_k
+        self.initial_hypotheses = initial_hypotheses
         # Cache for tested tokens (optimization)
         self._tested_tokens_cache = None
         self._cache_invalidation_count = 0
@@ -23,7 +24,7 @@ class PromptGenerator:
         # 基础上下文 (所有状态共享)
         base_context = f"""
 You are SAGE analyzing SAE Feature {self.sm.feature_id} at Layer {self.sm.layer}.
-Current Round: {self.sm.round}/14
+Current Round: {self.sm.round}/{self.sm.max_rounds}
 Current State: {self.sm.state.value}
 """
         
@@ -96,9 +97,13 @@ Current State: {self.sm.state.value}
         """分析exemplars的Prompt - Round 2 (合并分析与假设形成)"""
         # 注入exemplar数据
         exemplars_summary = self._summarize_exemplars_for_hypothesis()
+        hypothesis_lines = "\n".join(
+            f"Hypothesis_{i}: [Specific, testable alternative {i}]"
+            for i in range(1, self.initial_hypotheses + 1)
+        )
         
         return f"""
-**ROUND 2/14 - ANALYZE EXEMPLARS & FORM HYPOTHESES**
+**ROUND 2/{self.sm.max_rounds} - ANALYZE EXEMPLARS & FORM HYPOTHESES**
 
 **Task**: We have executed the maximum activation test on the corpus. Your mission is to systematically analyze and interpret specific SAE features. After analyzing the exemplar data, you MUST explicitly state hypotheses.
 
@@ -113,10 +118,7 @@ OBSERVATION:
 - Common elements: [list of common features from real exemplars]
 
 [HYPOTHESIS LIST]:
-Hypothesis_1: [Specific, testable claim based on analysis]
-Hypothesis_2: [Alternative explanation for the patterns]
-Hypothesis_3: [Edge case consideration - what might NOT activate this feature]
-Hypothesis_4: [Additional hypothesis covering different aspects]
+{hypothesis_lines}
 ```
 
 **Analysis & Hypothesis Formation Guidelines**:
@@ -176,7 +178,7 @@ Proceeding directly to design tests.
         hyp_id = self.sm.current_hypothesis_id if self.sm.current_hypothesis_id else 'X'
         
         return f"""
-**ROUND {self.sm.round + 1}/14 - DESIGN TEST - H{hyp_id}**
+**ROUND {self.sm.round + 1}/{self.sm.max_rounds} - DESIGN TEST - H{hyp_id}**
 {current_hyp_info}
 **YOUR TASK**: Design ONE test for the hypothesis. Write EXACTLY 3 lines, then STOP.
 
@@ -253,7 +255,7 @@ EXPECTED: High activation on token 'it' (>10)
         hyp_id = self.sm.current_hypothesis_id if self.sm.current_hypothesis_id else 'X'
         
         return f"""
-**ROUND {self.sm.round + 1}/14 - ANALYZE RESULT - H{hyp_id}**
+**ROUND {self.sm.round + 1}/{self.sm.max_rounds} - ANALYZE RESULT - H{hyp_id}**
 {current_hyp_info}
 **YOUR TASK**: Analyze the test results below and update hypothesis status.
 
@@ -342,7 +344,7 @@ Evidence: Test shows '▁for'=13.8 in "That's it for now", consistent with corpu
             urgency_note = "\n⚠️ **Late round** - prioritize CONFIRMED/REFUTED to reach conclusion.\n"
         
         return f"""
-**ROUND {self.sm.round + 1}/14 - UPDATE HYPOTHESIS**
+**ROUND {self.sm.round + 1}/{self.sm.max_rounds} - UPDATE HYPOTHESIS**
 {urgency_note}{current_hyp_info}
 **YOUR TASK**: Update Hypothesis {self.sm.current_hypothesis_id if self.sm.current_hypothesis_id else 'X'} based on test analysis.
 
@@ -809,7 +811,7 @@ Must be specific and complete. Include activation ranges and statistical evidenc
     
     def get_context_summary(self) -> str:
         """获取上下文摘要，用于压缩历史"""
-        summary = f"Round {self.sm.round}/14, State: {self.sm.state.value}\n"
+        summary = f"Round {self.sm.round}/{self.sm.max_rounds}, State: {self.sm.state.value}\n"
         summary += f"Hypotheses: {len(self.sm.hypotheses)}, Tests: {len(self.sm.test_history)}\n"
         
         if self.sm.hypotheses:

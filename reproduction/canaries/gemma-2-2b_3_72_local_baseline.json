@@ -1,0 +1,19 @@
+{
+  "test_kind": "formal_baseline_canary",
+  "paper_result": false,
+  "model_id": "gemma-2-2b",
+  "source": "3-gemmascope-res-16k",
+  "feature": 72,
+  "created_at_utc": "2026-07-30T03:23:52.342548+00:00",
+  "result": {
+    "description": "the adjective meaning ordinary/regular used as a modifier before nouns",
+    "model_snapshot": "gpt-5-2025-08-07",
+    "prompt_sha256": "f8574c4ae6e24627294d78fc47e625758685966d4bf72d7c63b3bd667ee437ae",
+    "neuronpedia_source_commit": "7724688596eb734a0662f911bf183151a5c66b2f",
+    "usage": {
+      "prompt_tokens": 8413,
+      "completion_tokens": 214,
+      "total_tokens": 8627
+    }
+  }
+}

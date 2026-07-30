@@ -32,7 +32,7 @@ warnings.filterwarnings("ignore")
 # Load project-specific environment variables
 def load_sage_env():
     """Load environment variables from SAGE project config file."""
-    config_file = Path(__file__).parent / "sage_config.env"
+    config_file = Path(__file__).resolve().parents[1] / "sage_config.env"
     if config_file.exists():
         with open(config_file, 'r') as f:
             for line in f:
@@ -216,7 +216,14 @@ def ask_agent(model: str, history: List[Dict[str, Any]]) -> str:
                 return response.content[0].text
                 
             # Handle OpenAI models
-            elif model in ['gpt-5-nano', 'gpt-5-mini', 'gpt-5', 'gpt-4o-new', 'gpt-4-turbo', 'gpt-4o', 'gpt-4o-mini', 'gpt-4'] and OPENAI_AVAILABLE:
+            elif (
+                (
+                    model.startswith("gpt-5")
+                    or model.startswith("gpt-4o")
+                    or model in ["gpt-4-turbo", "gpt-4"]
+                )
+                and OPENAI_AVAILABLE
+            ):
                 if model == 'gpt-4o-new':
                     model = 'gpt-4o-2024-11-20'
                 
@@ -346,7 +353,11 @@ def ask_agent(model: str, history: List[Dict[str, Any]]) -> str:
                 
             else:
                 print(f"❌ ERROR: Unrecognized model name: {model}")
-                available_models = ['gpt-5-nano', 'gpt-5-mini', 'gpt-5', 'gpt-4o-new', 'gpt-4-turbo', 'gpt-4o', 'gpt-4o-mini', 'gpt-4']
+                available_models = [
+                    "gpt-5", "gpt-5-2025-08-07", "gpt-5-mini",
+                    "gpt-5-nano", "gpt-4o", "gpt-4o-2024-11-20",
+                    "gpt-4-turbo", "gpt-4",
+                ]
                 print(f"❌ Available models: {available_models}")
                 print(f"❌ OPENAI_AVAILABLE: {OPENAI_AVAILABLE}")
                 raise ValueError(f"Unrecognized model name: {model}. Available models: {available_models}")
@@ -366,7 +377,11 @@ def ask_agent(model: str, history: List[Dict[str, Any]]) -> str:
             elif "model" in str(e).lower() and "not found" in str(e).lower():
                 print(f'❌ ERROR: OpenAI model not found: {str(e)}')
                 print(f'❌ Requested model: {model}')
-                available_models = ['gpt-5-nano', 'gpt-5-mini', 'gpt-5', 'gpt-4o-new', 'gpt-4-turbo', 'gpt-4o', 'gpt-4o-mini', 'gpt-4']
+                available_models = [
+                    "gpt-5", "gpt-5-2025-08-07", "gpt-5-mini",
+                    "gpt-5-nano", "gpt-4o", "gpt-4o-2024-11-20",
+                    "gpt-4-turbo", "gpt-4",
+                ]
                 print(f'❌ Available models: {available_models}')
                 raise ValueError(f"OpenAI model not found: {str(e)}. Requested: {model}, Available: {available_models}")
             else:

@@ -11,8 +11,9 @@ from core.state_machine import SAGEState
 class OutputValidator:
     """输出验证器 - 验证LLM输出格式"""
     
-    def __init__(self, top_k: int = 10):
+    def __init__(self, top_k: int = 10, initial_hypotheses: int = 4):
         self.top_k = top_k
+        self.initial_hypotheses = initial_hypotheses
         self.validation_rules = {
             SAGEState.INIT: self._validate_tool_call,
             SAGEState.GET_EXEMPLARS: self._validate_tool_call,
@@ -84,10 +85,10 @@ class OutputValidator:
         if not re.search(hypothesis_pattern, output):
             return False, "No numbered hypotheses found (use Hypothesis_1:, Hypothesis_2:, etc.)"
         
-        # Check至少3个假设
+        # The main paper specifies exactly four initial hypotheses.
         hypothesis_count = len(re.findall(hypothesis_pattern, output))
-        if hypothesis_count < 3:
-            return False, f"Only {hypothesis_count} hypotheses found. Need at least 3."
+        if hypothesis_count != self.initial_hypotheses:
+            return False, f"Found {hypothesis_count} hypotheses. Need exactly {self.initial_hypotheses}."
         
         # Check假设内容质量
         hypotheses = re.findall(r"Hypothesis_\d+:\s*(.+?)(?=Hypothesis_|$)", output, re.DOTALL)
@@ -110,10 +111,10 @@ class OutputValidator:
         if not re.search(hypothesis_pattern, output):
             return False, "No numbered hypotheses found (use Hypothesis_1:, Hypothesis_2:, etc.)"
         
-        # Check至少3个假设
+        # Keep the initial hypothesis count explicit and reproducible.
         hypothesis_count = len(re.findall(hypothesis_pattern, output))
-        if hypothesis_count < 3:
-            return False, f"Only {hypothesis_count} hypotheses found. Need at least 3."
+        if hypothesis_count != self.initial_hypotheses:
+            return False, f"Found {hypothesis_count} hypotheses. Need exactly {self.initial_hypotheses}."
         
         # Check假设内容质量
         hypotheses = re.findall(r"Hypothesis_\d+:\s*(.+?)(?=Hypothesis_|$)", output, re.DOTALL)

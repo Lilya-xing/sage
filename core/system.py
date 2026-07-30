@@ -120,8 +120,12 @@ class System:
     call_feature(text_list: List[str]) -> Tuple[List[float], List[str]]
         Returns the feature activation for each text in the input list.
     """
+    _LOCAL_MODEL_CACHE: Dict[Tuple[str, Optional[str], str], Any] = {}
+    _LOCAL_TOKENIZER_CACHE: Dict[Tuple[str, Optional[str]], Any] = {}
+    _LOCAL_SAE_CACHE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
-    def __init__(self, llm_name: str, sae_path: str, sae_layer: int, feature_index: int, device: str = "cpu", thresholds: Optional[Dict] = None, debug: bool = False, use_api_for_activations: bool = False, neuronpedia_model_id: Optional[str] = None, neuronpedia_source: Optional[str] = None):
+
+    def __init__(self, llm_name: str, sae_path: str, sae_layer: int, feature_index: int, device: str = "cpu", thresholds: Optional[Dict] = None, debug: bool = False, use_api_for_activations: bool = False, neuronpedia_model_id: Optional[str] = None, neuronpedia_source: Optional[str] = None, model_revision: Optional[str] = None):
         """
         Initializes a SAE feature object by specifying its index and layer location
         and the language model that the feature belongs to.
@@ -183,6 +187,7 @@ class System:
             self.device = "cpu"
         self.model_name = llm_name
         self.sae_path = sae_path
+        self.model_revision = model_revision
 
         # Determine if we're using SAELens (which requires HookedTransformer)
         self.use_hooked_transformer = sae_path.startswith("sae-lens://") if isinstance(sae_path, str) else False
@@ -195,9 +200,28 @@ class System:
             self.tokenizer = None
             self.sae = None
         elif TORCH_AVAILABLE:
-            self.sae = self._load_sae(sae_path)  # Load SAE first to check compatibility
-            self.model = self._load_model(llm_name)
-            self.tokenizer = self._load_tokenizer(llm_name)
+            sae_cache_key = (sae_path, str(self.device))
+            self.sae = self._LOCAL_SAE_CACHE.get(sae_cache_key)
+            if self.sae is None:
+                self.sae = self._load_sae(sae_path)
+                if self.sae:
+                    self._LOCAL_SAE_CACHE[sae_cache_key] = self.sae
+
+            model_cache_key = (llm_name, model_revision, str(self.device))
+            self.model = self._LOCAL_MODEL_CACHE.get(model_cache_key)
+            if self.model is None:
+                self.model = self._load_model(llm_name, revision=model_revision)
+                if self.model is not None:
+                    self._LOCAL_MODEL_CACHE[model_cache_key] = self.model
+
+            tokenizer_cache_key = (llm_name, model_revision)
+            self.tokenizer = self._LOCAL_TOKENIZER_CACHE.get(tokenizer_cache_key)
+            if self.tokenizer is None:
+                self.tokenizer = self._load_tokenizer(
+                    llm_name, revision=model_revision
+                )
+                if self.tokenizer is not None:
+                    self._LOCAL_TOKENIZER_CACHE[tokenizer_cache_key] = self.tokenizer
         else:
             self.model = None
             self.tokenizer = None
@@ -209,7 +233,7 @@ class System:
         else:
             self.threshold = 0.0
 
-    def _load_model(self, model_name: str) -> Any:
+    def _load_model(self, model_name: str, revision: Optional[str] = None) -> Any:
         """
         Loads the language model from HuggingFace.
 
@@ -231,7 +255,8 @@ class System:
                     model = HookedSAETransformer.from_pretrained(
                         model_name=model_name,
                         device=str(self.device),
-                        dtype="float32" if self.device.type == "cpu" else "float16"
+                        dtype="float32" if self.device.type == "cpu" else "float16",
+                        revision=revision,
                     )
                     return model
                 elif TRANSFORMER_LENS_AVAILABLE and HookedTransformer is not None:
@@ -239,7 +264,8 @@ class System:
                     model = HookedTransformer.from_pretrained(
                         model_name,
                         device=str(self.device),
-                        torch_dtype=torch.float16 if self.device.type == 'cuda' else torch.float32
+                        torch_dtype=torch.float16 if self.device.type == 'cuda' else torch.float32,
+                        revision=revision,
                     )
                     return model
                 else:
@@ -249,7 +275,8 @@ class System:
                 print(f"Loading AutoModel for model: {model_name}")
                 model = AutoModel.from_pretrained(
                     model_name,
-                    torch_dtype=torch.float16 if self.device.type == 'cuda' else torch.float32
+                    torch_dtype=torch.float16 if self.device.type == 'cuda' else torch.float32,
+                    revision=revision,
                 )
                 model = model.to(self.device).eval()
                 return model
@@ -257,7 +284,7 @@ class System:
             print(f"Warning: Could not load model {model_name}: {e}")
             return None
 
-    def _load_tokenizer(self, model_name: str) -> Any:
+    def _load_tokenizer(self, model_name: str, revision: Optional[str] = None) -> Any:
         """
         Loads the tokenizer for the language model.
         
@@ -272,7 +299,7 @@ class System:
             The loaded tokenizer.
         """
         try:
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
             return tokenizer
@@ -413,8 +440,12 @@ class System:
 
             with torch.no_grad():
                 if self.use_hooked_transformer:
-                    # Use TransformerLens's hook system for MLP output
-                    hook_name = f"blocks.{self.layer}.hook_mlp_out"
+                    # The paper mixes residual SAEs and transcoders. Respect
+                    # the hook encoded in each official SAE configuration.
+                    sae_obj = self.sae.get("__sae_lens_obj__")
+                    hook_name = getattr(
+                        getattr(sae_obj, "cfg", None), "hook_name", f"blocks.{self.layer}.hook_mlp_out"
+                    )
                     _, cache = self.model.run_with_cache(
                         input_ids,
                         names_filter=[hook_name]
@@ -645,8 +676,11 @@ class System:
 
         with torch.no_grad():
             if self.use_hooked_transformer:
-                # Use TransformerLens's run_with_cache for HookedTransformer
-                hook_name = f"blocks.{self.layer}.hook_mlp_out"
+                # Use the exact hook from the loaded SAE/transcoder config.
+                sae_obj = self.sae.get("__sae_lens_obj__")
+                hook_name = getattr(
+                    getattr(sae_obj, "cfg", None), "hook_name", f"blocks.{self.layer}.hook_mlp_out"
+                )
                 _, cache = self.model.run_with_cache(
                     input_ids,
                     names_filter=[hook_name]

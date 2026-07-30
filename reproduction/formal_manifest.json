@@ -1,0 +1,394 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-07-30T05:36:04.483105+00:00",
+  "status": "formal_aggregate_running",
+  "paper": {
+    "title": "SAGE: An Agentic Explainer Framework for Interpreting SAE Features in Language Models",
+    "venue": "EACL 2026 Industry Track",
+    "doi": "10.18653/v1/2026.eacl-industry.37",
+    "acl_url": "https://aclanthology.org/2026.eacl-industry.37/"
+  },
+  "code": {
+    "official_repository": "https://github.com/jiujiubuhejiu/SAGE",
+    "official_paper_code_commit": "add7ed7331e3d0d6fb497b2eb806aea4bc07c503",
+    "local_head": "e0dd0c3143feb3dda70c35e9e0df013bdb720c33",
+    "upstream_main": "add7ed7331e3d0d6fb497b2eb806aea4bc07c503",
+    "working_diff_sha256": "889fcd18be57dbc55e1471daad2a76b9c4f55226bfcf31f0927bc491b029f9c5"
+  },
+  "paper_main_spec": {
+    "agent_model_family": "gpt-5",
+    "layers": [
+      3,
+      7,
+      11,
+      23
+    ],
+    "features_per_layer": 10,
+    "target_models": 3,
+    "total_features": 120,
+    "top_k_exemplars": 10,
+    "initial_hypotheses": 4,
+    "max_rounds": 14,
+    "generated_examples_per_explanation": 10,
+    "generation_success_threshold": "0.5 * max(top_10_exemplar_activations)",
+    "prediction_metric": "mean per-example Pearson correlation",
+    "prediction_scale": "integer activation 0-10 from token logprobs"
+  },
+  "replication_pins": {
+    "agent_and_generation_model": "gpt-5-2025-08-07",
+    "prediction_simulator_model": "gpt-4o-2024-11-20",
+    "base_random_seed": 20260729,
+    "note": "Snapshots and seed are replication choices because the paper does not publish them."
+  },
+  "data_policy": {
+    "source": "live public Neuronpedia feature and activation APIs",
+    "freeze": "raw feature/baseline responses, exemplars, selected indices, retrieval timestamp, and SHA256 are saved per feature",
+    "baseline": "prefer exact existing gpt-5/oai_token-act-pair; otherwise generate locally with the official Neuronpedia prompt port and pinned GPT-5 snapshot",
+    "remote_mutation": "disabled; no explanation delete, generate, or upload calls"
+  },
+  "targets": [
+    {
+      "target_llm": "Qwen/Qwen3-4B",
+      "neuronpedia_model_id": "qwen3-4b",
+      "base_model_revision": "1cfa9a7208912126459214e8b04321603b3df60c",
+      "source_template": "{layer}-transcoder-hp",
+      "d_sae": 163840,
+      "activation_backend": "local_saelens",
+      "saelens_release": "mwhanna-qwen3-4b-transcoders",
+      "saelens_sae_id_template": "layer_{layer}",
+      "huggingface_repo": "mwhanna/qwen3-4b-transcoders",
+      "neuronpedia_inference_enabled": false,
+      "sae_revision": "94d176260ac39ce2f882b8b09aba8c118df29bb3"
+    },
+    {
+      "target_llm": "google/gemma-2-2b",
+      "neuronpedia_model_id": "gemma-2-2b",
+      "base_model_revision": "c5ebcd40d208330abc697524c919956e692655cf",
+      "source_template": "{layer}-gemmascope-res-16k",
+      "d_sae": 16384,
+      "activation_backend": "neuronpedia_api",
+      "saelens_release": "gemma-scope-2b-pt-res-canonical",
+      "saelens_sae_id_template": "layer_{layer}/width_16k/canonical",
+      "neuronpedia_inference_enabled": true
+    },
+    {
+      "target_llm": "openai/gpt-oss-20b",
+      "neuronpedia_model_id": "gpt-oss-20b",
+      "base_model_revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+      "source_template": "{layer}-resid-post-aa",
+      "d_sae": 131072,
+      "activation_backend": "neuronpedia_api",
+      "neuronpedia_inference_enabled": true
+    }
+  ],
+  "paper_published_canaries": [
+    {
+      "model": "gemma-2-2b",
+      "layer": 11,
+      "feature": 5125,
+      "source": "11-gemmascope-res-16k"
+    },
+    {
+      "model": "gemma-2-2b",
+      "layer": 11,
+      "feature": 13574,
+      "source": "11-gemmascope-res-16k"
+    },
+    {
+      "model": "qwen3-4b",
+      "layer": 3,
+      "feature": 148551,
+      "source": "3-transcoder-hp"
+    },
+    {
+      "model": "qwen3-4b",
+      "layer": 7,
+      "feature": 158076,
+      "source": "7-transcoder-hp"
+    },
+    {
+      "model": "qwen3-4b",
+      "layer": 23,
+      "feature": 24625,
+      "source": "23-transcoder-hp"
+    },
+    {
+      "model": "gpt-oss-20b",
+      "layer": 3,
+      "feature": 72038,
+      "source": "3-resid-post-aa"
+    },
+    {
+      "model": "gpt-oss-20b",
+      "layer": 3,
+      "feature": 121075,
+      "source": "3-resid-post-aa"
+    }
+  ],
+  "aggregate_matrix": [
+    {
+      "target_llm": "Qwen/Qwen3-4B",
+      "neuronpedia_model_id": "qwen3-4b",
+      "layer": 3,
+      "source": "3-transcoder-hp",
+      "d_sae": 163840,
+      "activation_backend": "local_saelens",
+      "source_seed": 5959266043649026818,
+      "features": [
+        163724,
+        8481,
+        106687,
+        42719,
+        64311,
+        86381,
+        21220,
+        59220,
+        51321,
+        141888
+      ]
+    },
+    {
+      "target_llm": "Qwen/Qwen3-4B",
+      "neuronpedia_model_id": "qwen3-4b",
+      "layer": 7,
+      "source": "7-transcoder-hp",
+      "d_sae": 163840,
+      "activation_backend": "local_saelens",
+      "source_seed": 15801791088217443133,
+      "features": [
+        68793,
+        44269,
+        38662,
+        121723,
+        58644,
+        123145,
+        64945,
+        85960,
+        80718,
+        152202
+      ]
+    },
+    {
+      "target_llm": "Qwen/Qwen3-4B",
+      "neuronpedia_model_id": "qwen3-4b",
+      "layer": 11,
+      "source": "11-transcoder-hp",
+      "d_sae": 163840,
+      "activation_backend": "local_saelens",
+      "source_seed": 12721290140169289794,
+      "features": [
+        51390,
+        137450,
+        1417,
+        38124,
+        92786,
+        108622,
+        140028,
+        22241,
+        120126,
+        111860
+      ]
+    },
+    {
+      "target_llm": "Qwen/Qwen3-4B",
+      "neuronpedia_model_id": "qwen3-4b",
+      "layer": 23,
+      "source": "23-transcoder-hp",
+      "d_sae": 163840,
+      "activation_backend": "local_saelens",
+      "source_seed": 3490771770428052412,
+      "features": [
+        135881,
+        87760,
+        107427,
+        143439,
+        24901,
+        15758,
+        71819,
+        23637,
+        92066,
+        134794
+      ]
+    },
+    {
+      "target_llm": "google/gemma-2-2b",
+      "neuronpedia_model_id": "gemma-2-2b",
+      "layer": 3,
+      "source": "3-gemmascope-res-16k",
+      "d_sae": 16384,
+      "activation_backend": "neuronpedia_api",
+      "source_seed": 5112636805347959335,
+      "features": [
+        72,
+        9337,
+        9861,
+        15370,
+        2227,
+        1130,
+        3712,
+        14056,
+        3910,
+        14131
+      ]
+    },
+    {
+      "target_llm": "google/gemma-2-2b",
+      "neuronpedia_model_id": "gemma-2-2b",
+      "layer": 7,
+      "source": "7-gemmascope-res-16k",
+      "d_sae": 16384,
+      "activation_backend": "neuronpedia_api",
+      "source_seed": 9868968452691164039,
+      "features": [
+        4699,
+        10688,
+        956,
+        8646,
+        9786,
+        6926,
+        5727,
+        5224,
+        5581,
+        15928
+      ]
+    },
+    {
+      "target_llm": "google/gemma-2-2b",
+      "neuronpedia_model_id": "gemma-2-2b",
+      "layer": 11,
+      "source": "11-gemmascope-res-16k",
+      "d_sae": 16384,
+      "activation_backend": "neuronpedia_api",
+      "source_seed": 17938935663108354267,
+      "features": [
+        15671,
+        9852,
+        8474,
+        6608,
+        14735,
+        1196,
+        9949,
+        8127,
+        7550,
+        14280
+      ]
+    },
+    {
+      "target_llm": "google/gemma-2-2b",
+      "neuronpedia_model_id": "gemma-2-2b",
+      "layer": 23,
+      "source": "23-gemmascope-res-16k",
+      "d_sae": 16384,
+      "activation_backend": "neuronpedia_api",
+      "source_seed": 9474600661148774316,
+      "features": [
+        2490,
+        10700,
+        7160,
+        10755,
+        9142,
+        15204,
+        71,
+        5661,
+        9148,
+        5188
+      ]
+    },
+    {
+      "target_llm": "openai/gpt-oss-20b",
+      "neuronpedia_model_id": "gpt-oss-20b",
+      "layer": 3,
+      "source": "3-resid-post-aa",
+      "d_sae": 131072,
+      "activation_backend": "neuronpedia_api",
+      "source_seed": 7578776696644769578,
+      "features": [
+        101166,
+        62642,
+        85077,
+        117940,
+        40064,
+        118518,
+        87149,
+        121271,
+        80968,
+        17017
+      ]
+    },
+    {
+      "target_llm": "openai/gpt-oss-20b",
+      "neuronpedia_model_id": "gpt-oss-20b",
+      "layer": 7,
+      "source": "7-resid-post-aa",
+      "d_sae": 131072,
+      "activation_backend": "neuronpedia_api",
+      "source_seed": 9009182922241929369,
+      "features": [
+        104993,
+        2704,
+        27861,
+        45814,
+        78438,
+        53555,
+        111352,
+        103629,
+        11292,
+        63251
+      ]
+    },
+    {
+      "target_llm": "openai/gpt-oss-20b",
+      "neuronpedia_model_id": "gpt-oss-20b",
+      "layer": 11,
+      "source": "11-resid-post-aa",
+      "d_sae": 131072,
+      "activation_backend": "neuronpedia_api",
+      "source_seed": 17392848365011023720,
+      "features": [
+        5424,
+        49156,
+        1925,
+        51897,
+        116392,
+        58936,
+        59367,
+        75613,
+        4342,
+        46804
+      ]
+    },
+    {
+      "target_llm": "openai/gpt-oss-20b",
+      "neuronpedia_model_id": "gpt-oss-20b",
+      "layer": 23,
+      "source": "23-resid-post-aa",
+      "d_sae": 131072,
+      "activation_backend": "neuronpedia_api",
+      "source_seed": 5827112779209535060,
+      "features": [
+        18995,
+        67488,
+        77588,
+        84068,
+        72970,
+        92115,
+        56429,
+        109204,
+        79076,
+        40380
+      ]
+    }
+  ],
+  "known_non_recoverable_paper_details": [
+    "The paper does not publish the complete 120 feature IDs.",
+    "The paper does not publish the feature-sampling seed.",
+    "The paper does not pin GPT-5 or prediction-simulator snapshots.",
+    "The paper does not freeze its Neuronpedia data snapshot or held-out exemplar indices.",
+    "The official repository has no paper-version tag or released aggregate result artifacts."
+  ],
+  "execution_gate": {
+    "canaries_before_aggregate": true,
+    "qwen_requires_local_model_and_transcoder": true,
+    "stop_on_metric_or_data_contract_failure": true
+  }
+}

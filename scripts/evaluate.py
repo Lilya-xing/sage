@@ -23,6 +23,8 @@ Requirements:
 """
 
 import os
+import hashlib
+import random
 import sys
 import json
 import argparse
@@ -36,9 +38,17 @@ from typing import Dict, Any, List, Tuple, Optional
 from pathlib import Path
 from openai import OpenAI
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # Reported by preflight before evaluation starts.
+    load_dotenv = None
+if load_dotenv is not None:
+    load_dotenv(Path(__file__).resolve().parents[1] / "sage_config.env")
+
 # Import required libraries
 from scipy.stats import pearsonr
 from dataclasses import dataclass
+from tools.neuronpedia_baseline import generate_baseline
 
 # Lazy initialization for OpenAI client (to avoid requiring API key at import time)
 _openai_client = None
@@ -76,6 +86,12 @@ def mean_per_example_pearson(
         "valid_examples": len(correlations),
         "correlations": correlations,
     }
+def stable_feature_seed(base_seed: int, model_id: str, layer: str, feature_index: int) -> int:
+    """Derive an order-independent seed for one model/layer/feature evaluation."""
+    payload = f"{base_seed}|{model_id}|{layer}|{feature_index}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+
+
 
 def get_openai_client():
     """Get or create OpenAI client (lazy initialization)"""
@@ -98,7 +114,12 @@ class TextWithActivation:
 # (From test_logprobs_evaluation.py)
 # ============================================================================
 
-def get_activation_logprobs(explanation: str, token: str, context_before: str = "") -> Tuple[dict, Dict[str, int]]:
+def get_activation_logprobs(
+    explanation: str,
+    token: str,
+    context_before: str = "",
+    simulator_model: str = "gpt-4o-2024-11-20",
+) -> Tuple[dict, Dict[str, int]]:
     """
     Get activation value prediction logprobs for a single token.
 
@@ -128,7 +149,7 @@ Please output only a number between 0-10, representing the activation value:"""
     # Call Chat API with logprobs
     client = get_openai_client()
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=simulator_model,
         messages=[
             {"role": "user", "content": prompt}
         ],
@@ -206,7 +227,8 @@ def compute_expected_activation(activation_probs: dict) -> float:
 def predict_activations_with_logprobs(
     explanation: str,
     tokens: List[str],
-    show_details: bool = False
+    show_details: bool = False,
+    simulator_model: str = "gpt-4o-2024-11-20",
 ) -> Tuple[List[float], Dict[str, int]]:
     """
     Use logprobs to predict activation values for a series of tokens.
@@ -225,7 +247,12 @@ def predict_activations_with_logprobs(
 
     for i, token in enumerate(tokens):
         # Get logprobs probability distribution
-        activation_probs, token_usage = get_activation_logprobs(explanation, token, context)
+        activation_probs, token_usage = get_activation_logprobs(
+            explanation,
+            token,
+            context,
+            simulator_model=simulator_model,
+        )
         
         # Accumulate token usage
         total_token_usage['prompt_tokens'] += token_usage['prompt_tokens']
@@ -272,6 +299,8 @@ def call_neuronpedia_api(
     api_key: str = None,
     output_dir: str = None,
     force_regenerate: bool = False,
+    fallback_exemplars: Optional[List[Dict[str, Any]]] = None,
+    fallback_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Fetch an existing Neuronpedia explanation without remote mutation."""
     del api_key, output_dir
@@ -293,6 +322,7 @@ def call_neuronpedia_api(
         ),
         None,
     )
+    result_source = "existing"
     if matching is None:
         available = [
             {
@@ -301,13 +331,24 @@ def call_neuronpedia_api(
             }
             for item in explanations
         ]
-        raise ValueError(
-            f"No exact Neuronpedia baseline for "
-            f"{explanation_model_name}/{explanation_type}; available={available}"
-        )
+        if fallback_exemplars and fallback_model:
+            local = generate_baseline(fallback_exemplars, fallback_model)
+            matching = {
+                "id": None,
+                "description": local["description"],
+                "explanationModelName": explanation_model_name,
+                "typeName": explanation_type,
+                "localProvenance": local,
+            }
+            result_source = "local_official_prompt"
+        else:
+            raise ValueError(
+                f"No exact Neuronpedia baseline for "
+                f"{explanation_model_name}/{explanation_type}; available={available}"
+            )
     return {
         "explanation": matching,
-        "source": "existing",
+        "source": result_source,
         "all_explanations": explanations,
         "feature_data": feature_data,
     }
@@ -489,6 +530,8 @@ def get_activation_exemplars_from_api(
             'tokens': List[str] (tokens in buffer region),
             'values': List[float] (activation values for tokens in buffer),
             'full_text': str (original full text from API, no filtering)
+            'full_tokens': List[str] (original full token sequence),
+            'full_values': List[float] (original full activation sequence),
         }, sorted by activation (descending)
     
     Raises:
@@ -570,7 +613,9 @@ def get_activation_exemplars_from_api(
                 'max_token_index': buffer_max_idx,  # Index of max token in buffer
                 'tokens': buffer_tokens,  # Tokens in buffer region
                 'values': buffer_values,  # Activation values for buffer tokens
-                'full_text': full_text  # Original full text (no filtering)
+                'full_text': full_text,  # Original full text (no filtering)
+                'full_tokens': tokens,
+                'full_values': values,
             })
         
         # Sort by activation (descending)
@@ -703,8 +748,9 @@ def select_exemplars_for_prediction_evaluation(
     exclude_top_n: int = 10,
     num_high: int = 4,
     num_medium: int = 3,
-    num_low: int = 3
-) -> Tuple[List[str], List[float]]:
+    num_low: int = 3,
+    rng: Optional[random.Random] = None,
+) -> Tuple[List[str], List[float], List[int]]:
     """
     Select exemplars for Prediction Evaluation from exemplars (excluding top N).
     
@@ -733,13 +779,13 @@ def select_exemplars_for_prediction_evaluation(
         - selected_activations: List of max activation values (from exemplar's 'activation' field,
                                which is the max activation value from the full text, not just buffer region)
     """
-    import random
+    local_rng = rng or random.Random()
     
     total_length = len(all_exemplars) if all_exemplars else 0
     
     if not all_exemplars or total_length <= exclude_top_n:
         print(f"   ⚠️  Not enough exemplars to select from (need more than {exclude_top_n}, got {total_length})")
-        return [], []
+        return [], [], []
     
     # Calculate position-based intervals (based on total length)
     # User's requirement: Use position-based intervals from sorted exemplars (by activation descending)
@@ -823,7 +869,7 @@ def select_exemplars_for_prediction_evaluation(
     
     # Select high-activating exemplars
     if len(high_candidates_indices) >= num_high:
-        selected_high_indices = random.sample(high_candidates_indices, num_high)
+        selected_high_indices = local_rng.sample(high_candidates_indices, num_high)
         for idx in selected_high_indices:
             exemplar = all_exemplars[idx]
             # Use buffer_text (already truncated around max activation token)
@@ -847,7 +893,7 @@ def select_exemplars_for_prediction_evaluation(
     
     # Select medium-activating exemplars
     if len(medium_candidates_indices) >= num_medium:
-        selected_medium_indices = random.sample(medium_candidates_indices, num_medium)
+        selected_medium_indices = local_rng.sample(medium_candidates_indices, num_medium)
         for idx in selected_medium_indices:
             exemplar = all_exemplars[idx]
             buffer_text = exemplar.get('text', exemplar.get('full_text', ''))
@@ -869,7 +915,7 @@ def select_exemplars_for_prediction_evaluation(
     
     # Select low-activating exemplars
     if len(low_candidates_indices) >= num_low:
-        selected_low_indices = random.sample(low_candidates_indices, num_low)
+        selected_low_indices = local_rng.sample(low_candidates_indices, num_low)
         for idx in selected_low_indices:
             exemplar = all_exemplars[idx]
             buffer_text = exemplar.get('text', exemplar.get('full_text', ''))
@@ -903,7 +949,7 @@ def select_exemplars_for_prediction_evaluation(
         text_preview = text[:80] + "..." if len(text) > 80 else text
         print(f"      {i}. Index: {idx}, Max Activation: {activation:.4f}, Max Token: '{max_token}', Text: {text_preview}")
     
-    return selected_texts, selected_activations
+    return selected_texts, selected_activations, selected_indices
 
 
 
@@ -1440,7 +1486,8 @@ def evaluate_prediction_ability(
     examples: List[str],
     activations: List[float] = None,
     source: str = "SAGE",
-    llm_model: str = "gpt-5",
+    simulator_model: str = "gpt-4o-2024-11-20",
+    system: Any = None,
     use_api: bool = False,
     model_id: str = None,
     layer: str = None,
@@ -1460,7 +1507,7 @@ def evaluate_prediction_ability(
         examples: List of test examples
         activations: Not used (kept for backward compatibility)
         source: Source of explanation
-        llm_model: LLM model for prediction (not used, hardcoded to gpt-4o for logprobs)
+        simulator_model: Fixed LLM snapshot used for token logprob simulation
         use_api: If True, use Neuronpedia API to get token-level activations (required)
         model_id: Model ID for API (required if use_api=True)
         layer: Layer identifier for API (required if use_api=True)
@@ -1473,15 +1520,8 @@ def evaluate_prediction_ability(
     """
     print(f"\n🔮 Evaluating {source} prediction ability using logprobs-based method...")
 
-    if not use_api:
-        print(f"   ⚠️  LogProbs-based prediction requires API mode. Skipping prediction evaluation.")
-        return {
-            'correlation': 0.0,
-            'p_value': 1.0,
-            'predictions': [],
-            'skipped': True,
-            'error': 'LogProbs-based prediction requires use_api=True'
-        }
+    if not use_api and system is None:
+        raise ValueError("Local prediction requires a loaded System")
 
     if len(examples) < 5:
         print(f"   ⚠️  Need at least 5 examples, got {len(examples)}. Skipping prediction evaluation.")
@@ -1492,12 +1532,13 @@ def evaluate_prediction_ability(
             'skipped': True
         }
 
-    # Validate API parameters
-    if not all([model_id, layer, feature_index is not None]):
-        raise ValueError("API mode requires model_id, layer, and feature_index")
-
-    print(f"   📡 Getting token-level activations from Neuronpedia API...")
-    print(f"      Model: {model_id}, Layer: {layer}, Feature: {feature_index}")
+    if use_api:
+        if not all([model_id, layer, feature_index is not None]):
+            raise ValueError("API mode requires model_id, layer, and feature_index")
+        print(f"   📡 Getting token-level activations from Neuronpedia API...")
+        print(f"      Model: {model_id}, Layer: {layer}, Feature: {feature_index}")
+    else:
+        print("   🖥️  Getting token-level activations from the local model + SAE")
 
     # Extract feature description for logprobs prediction
     # Extract feature description for logprobs prediction
@@ -1525,15 +1566,33 @@ def evaluate_prediction_ability(
             # Show progress
             print(f"      Processing example {i}/{len(examples)}: '{example_text[:50]}...'", end='\r')
 
-            # Get token-level activation data from API (normalized to 0-10 range for logprobs comparison)
-            activation_data = get_activation_data_from_api(
-                model_id=model_id,
-                source=layer,
-                feature_index=feature_index,
-                custom_text=example_text,
-                normalize_to_0_10=True,  # Enable normalization for Method 2 (logprobs-based prediction)
-                global_max_activation=global_max_activation  # Use global max activation as normalization baseline
-            )
+            if use_api:
+                activation_data = get_activation_data_from_api(
+                    model_id=model_id,
+                    source=layer,
+                    feature_index=feature_index,
+                    custom_text=example_text,
+                    normalize_to_0_10=True,
+                    global_max_activation=global_max_activation,
+                )
+            else:
+                trace = system.get_activation_trace(example_text)
+                tokens_local = trace.get("tokens", [])
+                values_local = trace.get("per_token_activation", [])
+                special = {
+                    "<|endoftext|>", "<|eot_id|>", "<eos>", "</s>",
+                    "<|begin_of_text|>", "<bos>", "<s>", "<pad>",
+                    "<unk>", "<mask>", "<sep>", "<cls>",
+                }
+                pairs = [
+                    (token, value) for token, value in zip(tokens_local, values_local)
+                    if token.strip().lower() not in {item.lower() for item in special}
+                ]
+                denominator = global_max_activation or max((value for _, value in pairs), default=0.0)
+                activation_data = {
+                    "tokens": [token for token, _ in pairs],
+                    "values": [((value / denominator) * 10.0 if denominator > 0 else 0.0) for _, value in pairs],
+                }
 
             tokens = activation_data['tokens']
             actual_values = activation_data['values']  # Already normalized to 0-10 range
@@ -1546,7 +1605,8 @@ def evaluate_prediction_ability(
             predicted_values, token_usage = predict_activations_with_logprobs(
                 explanation=feature_description,
                 tokens=tokens,
-                show_details=False
+                show_details=False,
+                simulator_model=simulator_model,
             )
             
             # Accumulate token usage and cost
@@ -1854,7 +1914,11 @@ def process_single_feature(
     device: str,
     output_dir: str,
     explanation_model_name: str = "gpt-5",
-    explanation_type: str = "oai_token-act-pair"
+    explanation_type: str = "oai_token-act-pair",
+    random_seed: int = 20260729,
+    simulator_model: str = "gpt-4o-2024-11-20",
+    activation_backend: str = "neuronpedia_api",
+    model_revision: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Process a single feature comparison.
@@ -1883,6 +1947,31 @@ def process_single_feature(
     Returns:
         dict with comparison results
     """
+    effective_random_seed = stable_feature_seed(
+        random_seed, neuronpedia_model_id, layer, feature_index
+    )
+    print(f"   Reproduction seed: {effective_random_seed} (base={random_seed})")
+    neuronpedia_retrieved_at = datetime.now().astimezone().isoformat()
+    if activation_backend not in {"neuronpedia_api", "local"}:
+        raise ValueError(f"Unknown activation backend: {activation_backend}")
+    use_activation_api = activation_backend == "neuronpedia_api"
+    local_system = None
+    if not use_activation_api:
+        if not sae_path:
+            raise ValueError("Local activation backend requires --sae_path")
+        from core.system import System
+
+        local_system = System(
+            llm_name=model_name,
+            model_revision=model_revision,
+            sae_path=sae_path,
+            sae_layer=int(str(layer).split("-", 1)[0]),
+            feature_index=feature_index,
+            device=device,
+            use_api_for_activations=False,
+        )
+
+
     print("\n" + "="*80)
     print(f"🔬 Processing Feature {feature_index}")
     print("="*80)
@@ -1897,7 +1986,9 @@ def process_single_feature(
     high_exemplars = []  # Top 10 high-activating exemplars (for Generation Evaluation and threshold)
     prediction_examples_texts = []  # Selected texts for Prediction Evaluation
     prediction_examples_activations = []  # Activation values for selected texts
+    prediction_example_indices = []  # Exact public exemplar positions selected
     global_max_activation = None  # Global max activation from all exemplars (for normalization)
+    activation_snapshot_sha256 = None
     
     try:
         # Get all exemplars from API (not just top 10)
@@ -1907,6 +1998,10 @@ def process_single_feature(
             feature_index=feature_index,
             return_all=True  # Get all exemplars
         )
+        activation_snapshot_sha256 = hashlib.sha256(
+            json.dumps(all_api_exemplars, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+
         
         if all_api_exemplars and len(all_api_exemplars) > 0:
             # Get top 10 high-activating exemplars for Generation Evaluation and threshold calculation
@@ -1943,12 +2038,13 @@ def process_single_feature(
             # Select exemplars for Prediction Evaluation (excluding top 10)
             # From remaining exemplars, select: 4 high, 3 medium, 3 low
             print(f"\n   📋 Selecting exemplars for Prediction Evaluation (excluding top 10):")
-            prediction_examples_texts, prediction_examples_activations = select_exemplars_for_prediction_evaluation(
+            prediction_examples_texts, prediction_examples_activations, prediction_example_indices = select_exemplars_for_prediction_evaluation(
                 all_api_exemplars,
                 exclude_top_n=10,  # Exclude top 10 (used for Generation Evaluation)
                 num_high=4,  # Select 4 high-activating exemplars
                 num_medium=3,  # Select 3 medium-activating exemplars
-                num_low=3  # Select 3 low-activating exemplars
+                num_low=3,  # Select 3 low-activating exemplars
+                rng=random.Random(effective_random_seed),
             )
             
             # Print top 10 high-activating exemplars (for Generation Evaluation)
@@ -2017,7 +2113,9 @@ def process_single_feature(
         explanation_type=explanation_type,
         api_key=neuronpedia_api_key,
         output_dir=output_dir,
-        force_regenerate=force_regenerate
+        force_regenerate=force_regenerate,
+        fallback_exemplars=high_exemplars,
+        fallback_model=llm_model,
     )
 
     if neuronpedia_result is None:
@@ -2075,9 +2173,9 @@ def process_single_feature(
         print(f"   Using activation threshold: {dynamic_activation_threshold:.4f} (calculated from API exemplars)")
         sage_evaluation = evaluate_examples(
             sage_examples, 
-            system=None,
+            system=local_system,
             activation_threshold=dynamic_activation_threshold,
-            use_api=True,
+            use_api=use_activation_api,
             model_id=neuronpedia_model_id,
             layer=layer,
             feature_index=feature_index
@@ -2090,9 +2188,9 @@ def process_single_feature(
         print(f"   Using activation threshold: {dynamic_activation_threshold:.4f} (calculated from API exemplars)")
         neuronpedia_evaluation = evaluate_examples(
             neuronpedia_examples, 
-            system=None,
+            system=local_system,
             activation_threshold=dynamic_activation_threshold,
-            use_api=True,
+            use_api=use_activation_api,
             model_id=neuronpedia_model_id,
             layer=layer,
             feature_index=feature_index
@@ -2115,12 +2213,13 @@ def process_single_feature(
             try:
                 print(f"   📡 Selected exemplars not available from STEP 0, selecting from API...")
                 if all_api_exemplars and len(all_api_exemplars) > 10:
-                    prediction_examples_texts, prediction_examples_activations = select_exemplars_for_prediction_evaluation(
+                    prediction_examples_texts, prediction_examples_activations, prediction_example_indices = select_exemplars_for_prediction_evaluation(
                         all_api_exemplars,
                         exclude_top_n=10,
                         num_high=4,
                         num_medium=3,
-                        num_low=3
+                        num_low=3,
+                        rng=random.Random(effective_random_seed),
                     )
                 else:
                     # Try to fetch all exemplars again
@@ -2132,17 +2231,19 @@ def process_single_feature(
                     )
                     
                     if all_exemplars_fallback and len(all_exemplars_fallback) > 10:
-                        prediction_examples_texts, prediction_examples_activations = select_exemplars_for_prediction_evaluation(
+                        prediction_examples_texts, prediction_examples_activations, prediction_example_indices = select_exemplars_for_prediction_evaluation(
                             all_exemplars_fallback,
                             exclude_top_n=10,
                             num_high=4,
                             num_medium=3,
-                            num_low=3
+                            num_low=3,
+                            rng=random.Random(effective_random_seed),
                         )
                     else:
                         print(f"   ❌ Not enough exemplars to select from (need more than 10, got {len(all_exemplars_fallback) if all_exemplars_fallback else 0})")
                         prediction_examples_texts = []
                         prediction_examples_activations = []
+                        prediction_example_indices = []
             except Exception as e:
                 print(f"   ❌ Failed to select exemplars: {e}")
                 print("   ⚠️  Skipping prediction evaluation")
@@ -2150,6 +2251,7 @@ def process_single_feature(
                 traceback.print_exc()
                 prediction_examples_texts = []
                 prediction_examples_activations = []
+                prediction_example_indices = []
         
         if prediction_examples_texts and len(prediction_examples_texts) >= 10 and len(prediction_examples_activations) == len(prediction_examples_texts):
             # Prediction evaluation for SAGE (using logprobs-based method, requires API for token-level activations)
@@ -2163,8 +2265,9 @@ def process_single_feature(
                 prediction_examples_texts,  # Use selected exemplars from API
                 activations=None,  # Not used in logprobs-based method, will get from API
                 source="SAGE", 
-                llm_model=llm_model,
-                use_api=True,  # Required for logprobs-based prediction to get token-level activations
+                simulator_model=simulator_model,
+                system=local_system,
+                use_api=use_activation_api,
                 model_id=neuronpedia_model_id,
                 layer=layer,
                 feature_index=feature_index,
@@ -2182,8 +2285,9 @@ def process_single_feature(
                 prediction_examples_texts,  # Use selected exemplars from API
                 activations=None,  # Not used in logprobs-based method, will get from API
                 source="Neuronpedia", 
-                llm_model=llm_model,
-                use_api=True,  # Required for logprobs-based prediction to get token-level activations
+                simulator_model=simulator_model,
+                use_api=use_activation_api,
+                system=local_system,
                 model_id=neuronpedia_model_id,
                 layer=layer,
                 feature_index=feature_index,
@@ -2259,17 +2363,21 @@ def process_single_feature(
         output_data = {
             'configuration': {
                 'model_name': model_name,  # Kept for record-keeping only
+                'model_revision': model_revision,
                 'sae_path': sae_path,  # Kept for record-keeping only (optional)
                 'layer': layer,  # REQUIRED for API calls
                 'feature_index': feature_index,  # REQUIRED for API calls
                 'llm_model': llm_model,
+                'simulator_model': simulator_model,
+                'random_seed_base': random_seed,
+                'random_seed_effective': effective_random_seed,
                 'num_examples': num_examples,
                 'activation_threshold_original': activation_threshold,  # Original threshold provided as parameter
                 'activation_threshold_used': dynamic_activation_threshold,  # Dynamic threshold calculated from API exemplars
                 'activation_threshold_source': 'dynamic_from_api_exemplars' if high_exemplars else 'original_parameter',
-                'evaluation_method': 'neuronpedia_api',
-                'generation_evaluation_uses_api': True,
-                'prediction_evaluation_uses_api': True,
+                'evaluation_method': activation_backend,
+                'generation_evaluation_uses_api': use_activation_api,
+                'prediction_evaluation_uses_api': use_activation_api,
                 'prediction_evaluation_uses_exemplars': True,  # New: indicates using exemplars, not explanations
                 'prediction_evaluation_uses_selected_exemplars': True,  # New: indicates using selected exemplars directly (no generation)
                 'prediction_evaluation_activations_from_exemplars': True,  # New: indicates using activation values from exemplars (no API calls needed)
@@ -2317,6 +2425,7 @@ def process_single_feature(
                     },
                     'selected_texts': prediction_examples_texts if prediction_examples_texts else [],
                     'selected_activations': prediction_examples_activations if prediction_examples_activations else [],
+                    'selected_indices': prediction_example_indices if prediction_example_indices else [],
                     'activation_range': [min(prediction_examples_activations), max(prediction_examples_activations)] if prediction_examples_activations and len(prediction_examples_activations) > 0 else None
                 },
                 'note': 'All activation evaluations use Neuronpedia API. Activation threshold is dynamically calculated from top 10 high-activating API exemplars (half of the maximum activation). Generation Evaluation uses top 10 high-activating exemplars. Prediction Evaluation uses selected exemplars directly from API (excluding top 10), with activation values already available (no API calls needed for activations). model_name and sae_path are kept for record-keeping only and are not used for any calculations.'
@@ -2340,9 +2449,10 @@ def process_single_feature(
             'prediction_evaluation': {
                 'selected_exemplars': [
                     {
+                        'index': index,
                         'text': text,
-                        'activation': activation
-                    } for text, activation in zip(prediction_examples_texts, prediction_examples_activations)
+                        'activation': activation,
+                    } for index, text, activation in zip(prediction_example_indices, prediction_examples_texts, prediction_examples_activations)
                 ] if prediction_examples_texts and prediction_examples_activations else [],
                 'selection_method': 'random_selection_from_categorized_exemplars',
                 'selection_details': {
@@ -2354,7 +2464,13 @@ def process_single_feature(
                 },
                 'note': 'Prediction Evaluation uses selected exemplars directly from API (excluding top 10 used for Generation Evaluation). Exemplars are categorized into high, medium, and low activation groups from remaining exemplars, and randomly selected from each group. Activation values are already available from exemplars, so no API calls are needed to get activations. This avoids bias from explanation text and ensures diverse activation levels in evaluation examples.'
             },
-            'comparison': comparison
+            'comparison': comparison,
+            'neuronpedia_activation_snapshot': {
+                'retrieved_at': neuronpedia_retrieved_at,
+                'sha256': activation_snapshot_sha256,
+                'source': f"https://www.neuronpedia.org/{neuronpedia_model_id}/{layer}/{feature_index}",
+                'all_exemplars': all_api_exemplars,
+            },
         }
 
         # Save results
@@ -2445,6 +2561,8 @@ def main():
     # Shared configuration (must match between SAGE and Neuronpedia)
     parser.add_argument('--model_name', type=str, default=None,
                        help='Model name (optional, kept for compatibility/record-keeping only, not used for activations. If not provided, will use neuronpedia_model_id)')
+    parser.add_argument('--model_revision', type=str, default=None,
+                       help='Exact Hugging Face revision for local target-model loading')
     parser.add_argument('--sae_path', type=str, default=None,
                        help='SAE path or SAE Lens URI (optional, kept for compatibility/record-keeping only, not used for activations)')
     parser.add_argument('--layer', type=str, required=True,
@@ -2462,12 +2580,20 @@ def main():
                        help='Explanation type (default: oai_token-act-pair)')
 
     # Evaluation configuration
-    parser.add_argument('--llm_model', type=str, default='gpt-5',
-                       help='LLM model for generating examples (default: gpt-5)')
+    parser.add_argument('--llm_model', type=str, default='gpt-5-2025-08-07',
+                       help='LLM model snapshot for generating examples')
+    parser.add_argument('--simulator_model', type=str, default='gpt-4o-2024-11-20',
+                       help='LLM model snapshot for logprob prediction simulation')
+    parser.add_argument('--seed', type=int, default=20260729,
+                       help='Base seed for deterministic held-out exemplar selection')
     parser.add_argument('--num_examples', type=int, default=10,
                        help='Number of examples to generate per explanation (default: 10)')
     parser.add_argument('--activation_threshold', type=float, default=8.0,
                        help='Activation threshold for success (default: 8.0)')
+    parser.add_argument(
+        '--activation_backend', choices=('neuronpedia_api', 'local'), default='neuronpedia_api',
+        help='Custom-text activation backend; Qwen paper sources require local',
+    )
 
     # Other
     parser.add_argument('--device', type=str, default='cuda',
@@ -2528,6 +2654,8 @@ def main():
     print(f"\nAPI Configuration (REQUIRED for activation calculations):")
     print(f"  Layer: {args.layer}")
     print(f"  Neuronpedia Model ID: {args.neuronpedia_model_id}")
+    print(f"  Simulator model: {args.simulator_model}")
+    print(f"  Base random seed: {args.seed}")
     print(f"  Explanation Model: {args.explanation_model_name}")
     print(f"  Explanation Type: {args.explanation_type}")
     print(f"\nEvaluation Configuration:")
@@ -2572,6 +2700,7 @@ def main():
         # Process this feature
         result = process_single_feature(
             sage_results_path=str(sage_results_file),
+            model_revision=args.model_revision,
             model_name=args.model_name,
             sae_path=args.sae_path,
             layer=args.layer,
@@ -2584,7 +2713,10 @@ def main():
             device=args.device,
             output_dir=str(feature_output_dir),
             explanation_model_name=args.explanation_model_name,
-            explanation_type=args.explanation_type
+            explanation_type=args.explanation_type,
+            random_seed=args.seed,
+            simulator_model=args.simulator_model,
+            activation_backend=args.activation_backend,
         )
 
         all_results.append(result)
@@ -2631,6 +2763,7 @@ def main():
         batch_summary_file = os.path.join(args.output_dir, 'batch_comparison_summary.json')
         batch_summary = {
             'configuration': {
+                'model_revision': args.model_revision,
                 'model_name': args.model_name,  # Record-keeping only
                 'sae_path': args.sae_path,  # Record-keeping only (optional)
                 'layer': args.layer,  # Used for API calls

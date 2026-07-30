@@ -17,7 +17,7 @@ class SAGEController:
     
     def __init__(self, feature_id: int, layer: int, llm_client, tools, experiment_env,
                  debug: bool = False, max_rounds: int = 30, top_k: int = 10,
-                 timeout_minutes: float = 30):
+                 timeout_minutes: float = 30, initial_hypotheses: int = 4):
         self.feature_id = feature_id
         self.layer = layer
         self.llm_client = llm_client
@@ -25,12 +25,13 @@ class SAGEController:
         self.experiment_env = experiment_env
         self.debug = debug
         self.top_k = top_k
+        self.initial_hypotheses = initial_hypotheses
         self.timeout_seconds = max(0.0, float(timeout_minutes) * 60.0)
         
         # Initialize 3-layer architecture
         self.state_machine = SAGEStateMachine(feature_id, layer, max_rounds)
-        self.prompt_generator = PromptGenerator(self.state_machine, top_k=self.top_k)
-        self.output_validator = OutputValidator(top_k=self.top_k)
+        self.prompt_generator = PromptGenerator(self.state_machine, top_k=self.top_k, initial_hypotheses=self.initial_hypotheses)
+        self.output_validator = OutputValidator(top_k=self.top_k, initial_hypotheses=self.initial_hypotheses)
         
         # Execution statistics
         self.execution_stats = {
@@ -50,7 +51,11 @@ class SAGEController:
         """Run until DONE while enforcing the CLI round and wall-clock budgets."""
         self.execution_stats["start_time"] = time.time()
         deadline = self.execution_stats["start_time"] + self.timeout_seconds
-        max_iterations = self.state_machine.max_rounds + 2
+        # A paper round can require multiple controller iterations while the
+        # parallel hypotheses move through design, analysis, and update.
+        # Keep a looser safety guard; max_rounds and the wall-clock deadline
+        # remain the semantic stopping conditions.
+        max_iterations = self.state_machine.max_rounds * 4 + 2
 
         if self.debug:
             print(
@@ -1510,6 +1515,12 @@ This feature requires further investigation due to insufficient data.
             "feature_id": self.feature_id,
             "layer": self.layer,
             "final_state": self.state_machine.state.value,
+            "configuration": {
+                "agent_model": self.llm_client if isinstance(self.llm_client, str) else type(self.llm_client).__name__,
+                "max_rounds": self.state_machine.max_rounds,
+                "top_k_exemplars": self.top_k,
+                "initial_hypotheses": self.initial_hypotheses,
+            },
             "total_rounds": self.state_machine.round,
             "execution_stats": self.execution_stats,
             "duration_seconds": duration,

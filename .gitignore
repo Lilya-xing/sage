@@ -7,8 +7,10 @@
 
 # Local runtime
 .venv/
+.venv-local/
 .env
 .env.*
+/sage_config.env
 *.log
 *.tmp
 *.backup
@@ -16,9 +18,17 @@
 # Large/generated artifacts
 runs/
 outputs/
+/results/
 checkpoints/
 *.pt
 *.pth
 *.ckpt
 *.safetensors
 *.onnx
+
+# Reproduction runtime state
+/reproduction/formal_*_supervisor.pid
+/reproduction/formal_eval_*.json
+/reproduction/formal_repair_*.json
+/reproduction/formal_run_state.json
+/reproduction/formal_runner_*.json

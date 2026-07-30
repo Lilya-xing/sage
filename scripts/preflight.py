@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+from pathlib import Path
 from typing import Iterable
 
 
@@ -30,6 +31,32 @@ def missing_modules(packages: Iterable[str]) -> list[str]:
     ]
 
 
+def packages_for_mode(mode: str) -> list[str]:
+    packages = ["openai", "requests", "python-dotenv"]
+    if mode == "paper":
+        packages.extend(["numpy", "scipy"])
+    elif mode == "local":
+        packages.extend(
+            [
+                "numpy",
+                "scipy",
+                "torch",
+                "transformers",
+                "datasets",
+                "sae-lens",
+                "transformer-lens",
+            ]
+        )
+    return packages
+
+
+def load_project_env() -> None:
+    if importlib.util.find_spec("dotenv") is not None:
+        from dotenv import load_dotenv
+
+        load_dotenv(Path(__file__).resolve().parents[1] / "sage_config.env")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -40,12 +67,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    packages = ["openai", "requests", "python-dotenv"]
+    load_project_env()
+
+    packages = packages_for_mode(args.mode)
     keys = ["OPENAI_API_KEY"]
-    if args.mode in {"local", "paper"}:
-        packages.extend(["numpy", "scipy", "torch", "transformers", "datasets"])
-    if args.mode == "local":
-        packages.extend(["sae-lens", "transformer-lens"])
 
     missing = missing_modules(packages)
     missing_keys = [key for key in keys if not os.getenv(key)]
